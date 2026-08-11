@@ -11,8 +11,6 @@ In educational settings without a centralized system, assignment details get los
 ### Target Users
 **Instructors** — the sole Target User of this system. Instructors are the only people who create accounts, log in, and use the application in any way.
 
-*(Note: this MVP is an internal organizational tool for instructors. It does not include any mechanism for students or other outside parties to access the system — there is no public view, share link, or student-facing surface of any kind. See Sections 2–5 for scope details.)*
-
 ### Product Goal
 Give instructors a single, reliable place to create, organize, and track assignments with clear due dates and criteria, reducing missed deadlines and repetitive student questions — delivered as a lightweight MVP buildable by a small student developer team in one semester.
 
@@ -31,14 +29,10 @@ Give instructors a single, reliable place to create, organize, and track assignm
 ### Out of Scope (MVP)
 - Student accounts, login, or self-enrollment.
 - Any public or unauthenticated access to assignment data (no share links, no read-only views).
-- Submission workflow (students uploading/submitting work) — moved to Future Improvements (Section 18).
-- Inter-team webhook integrations and AI-assisted features — moved to Future Improvements (Section 18).
-- Grading/gradebook analytics dashboards.
+- Submission workflow (students uploading/submitting work) — moved to Future Improvements.
+- Inter-team webhook integrations and AI-assisted features — moved to Future Improvements.
 - Native mobile apps.
-- Payment processing.
 - Push/email notification systems.
-- Plagiarism detection.
-- Real-time chat or messaging between users.
 
 ---
 
@@ -49,18 +43,13 @@ Give instructors a single, reliable place to create, organize, and track assignm
 - Creates, views, edits, and deletes Assignments with due dates and criteria.
 - Is the only person who can access any data in the system — everything is scoped to the authenticated Instructor who owns it.
 
-*(There is no unauthenticated or public role in this MVP. Earlier drafts included a "Public Viewer" role tied to a shareable link; that has been removed so the system is a purely instructor-facing tool.)*
-
 ---
 
 ## 4. User Journey
 
 ### Main Journey (Instructor)
 1. **Sign Up / Log In** — Instructor authenticates via email/password.
-2. **Dashboard** — Instructor sees all their Cohorts and Assignments in one place (single source of truth).
-3. **Create/Edit Assignment** — Instructor sets title, description, due date, and criteria for an Assignment, and it is saved immediately as the authoritative record.
-
-*(This is the only journey in the MVP. There is no student-facing journey of any kind — the system has no way for anyone other than the owning Instructor to view or interact with the data.)*
+2. **Create/Edit Assignment** — Instructor sets title, description, due date, and criteria for an Assignment, and it is saved immediately as the authoritative record.
 
 ---
 
@@ -78,15 +67,12 @@ Instructors can create an Assignment within a Cohort, including title, descripti
 ### FR-04 — Assignment Editing & Deletion
 Instructors can update or delete Assignments they own.
 
-### FR-05 — Instructor Dashboard & Viewing
-Instructors can view a consolidated list of their own Cohorts and Assignments (with title, description, criteria, due date, and attachment), and can filter or browse Assignments by Cohort. This is the single source of truth the instructor uses in place of scattered channels.
-
 ---
 
 ## 6. Non-Functional Requirements
 
 ### NFR-01 Performance
-Core screens (Dashboard, Assignment view) should load in under 2 seconds on a typical broadband connection, given expected low concurrent usage (single-classroom scale).
+Core screens (Assignment view) should load in under 2 seconds on a typical broadband connection, given expected low concurrent usage (single-classroom scale).
 
 ### NFR-02 Security / Data Isolation
 - One Instructor's Cohorts and Assignments must never be readable or editable by another Instructor.
@@ -118,7 +104,7 @@ The system has no mechanism for any unauthenticated party to view, create, or mo
 
 ### User (Instructor)
 Stores authentication and profile data for instructors — the only account type created in MVP.
-- **Fields:** ID (PK), FullName, Email (Unique), PasswordHash
+- **Fields:** ID (PK, = Firebase Auth UID), FullName, Email (Unique)
 - **Relationships:** 1-to-Many with Cohort
 - **Permissions:** Create: Public (Sign up). Read/Update/Delete: Self only.
 
@@ -141,16 +127,16 @@ An assignment created by an Instructor within a Cohort.
 ## 9. Architecture
 
 ### Architecture Overview
-A client-heavy architecture using Firebase as an all-in-one Backend-as-a-Service, matching the team's constraints (3–5 student developers, one semester, zero deployment budget). The React frontend talks directly to Firestore/Auth/Storage via the Firebase SDK for standard CRUD, with Firebase Cloud Functions reserved for the authenticated REST API surface.
+A Firebase-based architecture matching the team's constraints (3–5 student developers, one semester, zero deployment budget). All Cohort and Assignment data — every create, read, update, and delete — goes through a single path: the authenticated REST API (Firebase Cloud Functions). The React frontend never writes or reads Firestore directly. This keeps authorization logic in one place (the Cloud Functions layer) instead of split between client-side Firestore calls and server-side REST calls, which avoids the risk of the two paths enforcing different rules. The frontend does talk directly to Firebase Auth (to sign in and obtain an ID token) and directly to Firebase Storage (only for uploading attachment files, which is a separate concern from Cohort/Assignment data — see the Storage component below).
 
 ### Architecture Diagram
-```
-[Instructor's React App] --(Firebase SDK)--> [Firebase Auth]
-       |                                      [Firestore DB]
-       |                                      [Firebase Storage]
+
+[Instructor's React App] --(Firebase SDK)--> [Firebase Auth]  (sign in, get ID token)
+       |
+       +--(Firebase SDK, direct upload)-----> [Firebase Storage]  (attachment files only)
        |
        +--(HTTPS REST calls, authenticated)--> [Firebase Cloud Functions] --> [Firestore DB]
-```
+                                                  (all Cohort/Assignment CRUD)
 
 ### Components
 
@@ -158,18 +144,17 @@ A client-heavy architecture using Firebase as an all-in-one Backend-as-a-Service
 React (Create React App or Vite + React), used only by Instructors.
 
 #### Backend
-Two layers:
-1. Direct client-to-Firestore calls (via Firebase SDK) for simple, rule-protected CRUD by the Instructor (Cohorts, Assignments).
-2. Firebase Cloud Functions for the authenticated REST API surface (see Section 11).
+A single layer: Firebase Cloud Functions expose the authenticated REST API (see Section 11), which is the only path for all Cohort and Assignment CRUD. The frontend does not call Firestore directly for this data — this keeps ownership/authorization checks in one codebase instead of duplicating them across a client SDK path and a server path.
 
 #### Database
-Firestore (NoSQL document database), with collections mirroring the entities in Section 8 (`users`, `cohorts`, `assignments`). The simplified, mostly two-level structure (Cohort → Assignment) fits Firestore's document model well.
+Firestore (NoSQL document database), with collections mirroring the entities in Section 8 (users, cohorts, assignments). The simplified, mostly two-level structure (Cohort → Assignment) fits Firestore's document model well. Firestore is only ever accessed by the Cloud Functions layer (via the Firebase Admin SDK) — the React frontend has no direct read/write path to it.
 
 #### Authentication
 Firebase Auth (email/password), used only for Instructor accounts.
 
 #### Storage
-Firebase Cloud Storage, for optional Instructor-uploaded Assignment attachments (e.g., a rubric PDF), capped at 5MB. *(Assumption: size cap carried over from the original architecture discussion; team should confirm.)*
+Firebase Cloud Storage, for optional Instructor-uploaded Assignment attachments (e.g., a rubric PDF), capped at 5MB. (Assumption: size cap carried over from the original architecture discussion; team should confirm.)
+Upload flow: the frontend uploads the file directly to Firebase Storage via the client SDK first and receives back a download URL. Only that URL is then included as attachmentUrl in the REST API call (API-05 / API-08) to Cloud Functions — the file itself never passes through the Cloud Function. This is the one intentional exception to "all data access goes through the REST API," since attachment bytes are not Firestore data and Storage has its own security rules.
 
 #### External Services
 None in MVP. The system is entirely self-contained within the Instructor-facing application; there are no outbound integrations, webhooks, or third-party AI calls.
@@ -181,7 +166,7 @@ None in MVP. The system is entirely self-contained within the Instructor-facing 
 | Layer | Technology | Reason |
 |---|---|---|
 | Frontend | React | Team-specified; fast to build the 3 core instructor screens |
-| Backend | Firebase SDK / Cloud Functions | Team-specified; SDK covers Instructor CRUD, Functions cover the authenticated REST API |
+| Backend | Firebase SDK / Cloud Functions | Team-specified; Functions expose the single authenticated REST API that handles all Instructor CRUD (Cohorts, Assignments) |
 | Database | Firestore | Team-specified NoSQL store; a good fit since the MVP data model is simple (User → Cohort → Assignment) with no deep relational joins |
 | Auth | Firebase Auth | Team-specified; fast, free-tier email/password auth for Instructors |
 | Hosting | Firebase Hosting | Team-specified; free static hosting integrated with the rest of Firebase |
@@ -205,18 +190,19 @@ Rename a Cohort. Owning Instructor only.
 Delete a Cohort. Owning Instructor only.
 
 ### API-05 — `POST /assignments`
-Create an Assignment. Body: `{cohortId, title, description, criteria, dueDate, attachmentUrl?}`. Owning Instructor only.
+Create an Assignment. Body: {cohortId, title, description, criteria, dueDate, attachmentUrl?}. attachmentUrl is optional and, if present, must already point to a file the Instructor has uploaded to Firebase Storage (see Section 9, Storage — upload happens client-side before this call). Owning Instructor only.
 
 ### API-06 — `GET /assignments?cohortId=`
 List the Assignments within one of the authenticated Instructor's own Cohorts.
 
-### API-07 — `PUT /assignments/:id`
-Update an Assignment. Owning Instructor only.
+### API-07 — `GET /assignments/:id`
+Fetch a single Assignment by ID. Owning Instructor only. Used by the Edit Assignment screen to load current values.
 
-### API-08 — `DELETE /assignments/:id`
+### API-08 — `PUT /assignments/:id`
+Update an Assignment. Same optional attachmentUrl handling as API-05 (upload to Storage first, then send the URL). Owning Instructor only.
+
+### API-09 — `DELETE /assignments/:id`
 Delete an Assignment. Owning Instructor only.
-
-*(8 endpoints listed to satisfy the "at least 6" requirement with headroom. Every endpoint requires authentication — there is no public or unauthenticated endpoint in MVP.)*
 
 ---
 
@@ -226,13 +212,14 @@ Delete an Assignment. Owning Instructor only.
 Firebase Auth (email/password) issues ID tokens; every Cloud Function REST endpoint verifies the Firebase ID token before processing a request. There is no unauthenticated endpoint in MVP.
 
 ### Authorization
-Enforced at two layers:
-- **Firestore Security Rules** for direct client reads/writes (e.g., an Instructor can only write Assignments/Cohorts where `InstructorID == request.auth.uid`).
-- **Cloud Function checks** for REST endpoints, re-validating ownership server-side (since Functions bypass Firestore rules by default).
+Since the frontend has no direct Firestore access (Section 9), ownership checks live in one place:
+- Cloud Function checks on every REST endpoint (API-01 through API-09) re-validate ownership server-side before any read or write (e.g., a request against a Cohort/Assignment only succeeds if InstructorID == request.auth.uid for the token presented).
+- Firestore Security Rules are set to deny all direct client reads/writes to the cohorts and assignments collections. This is a defense-in-depth backstop, not the primary authorization layer — even if a client somehow bypassed the REST API, the rules block it. Only the Cloud Functions service account (via the Admin SDK) can read/write these collections.
+- Storage Security Rules separately restrict attachment access to the owning Instructor, since file upload/download goes directly through the client SDK rather than the REST API (Section 9).
 
 ### Data Protection
-- `PasswordHash` is never exposed via any read path.
-- No endpoint or view returns another Instructor's data.
+- No password or password hash is ever stored in Firestore or exposed via any read path — Firebase Auth owns that data entirely (Section 8).
+- No endpoint returns another Instructor's data.
 - Uploaded attachments are size-capped at 5MB and access-controlled via Storage security rules tied to the owning Instructor.
 
 ---
@@ -279,8 +266,6 @@ Enforced at two layers:
 | Firebase Cloud Functions require the Blaze plan, which requires entering a credit card — in tension with the zero-budget constraint (CON-01) | High — could block the REST API layer entirely if students won't add a card | Confirm upfront whether students can add a card to Blaze (usage can still be $0 with budget alerts/quotas); if not, move the Functions layer to a free alternative (e.g., a free-tier Node server) while keeping Firestore/Auth/Storage on Firebase |
 | Bugs in Firestore/Storage Security Rules | High — could expose one Instructor's data to another | Write and run automated rules tests (contributes to the 7+ test requirement) against the Firebase Emulator before each deploy |
 | Small team / one semester timeline | Medium — scope creep could prevent MVP completion | Strict adherence to Section 2 scope; defer anything not listed to Section 18 |
-
-*(Risks tied to the shareable link and the AI-assisted webhook have been removed along with those features — see Section 18, Future Improvements.)*
 
 ---
 
