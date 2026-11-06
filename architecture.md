@@ -1,58 +1,71 @@
 ## Architecture
 
 ### Architecture Overview
-The system architecture adopts a 100% **Backend-as-a-Service (BaaS)** approach using Firebase. This directly addresses the constraints of a zero-dollar budget ($0) and a one-semester development timeline for a small student team.
+The system uses a **lightweight serverless REST API on Vercel in front of Firebase**. It still fits
+the $0 budget and one-semester timeline, while adding the HTTP endpoints that Assignment 5 requires
+for integration with Team 06 (Submission Module).
 
-There will be no custom REST API layer (no Node.js or Cloud Functions). Instead, the React frontend will connect, communicate, and perform all CRUD operations directly against the database using the **Firebase Client SDK**. All authorization and business logic will be handled centrally by **Firestore Security Rules**. This architecture eliminates server cold starts, reduces the burden of maintaining two separate codebases, and ensures the project remains entirely within the free-tier limits of the Firebase Spark Plan.
+The React frontend no longer talks to Firestore directly. Every read and write goes through a small
+set of Vercel Serverless Functions, which use the **Firebase Admin SDK** to access Cloud Firestore.
+The same API acts as the integration point with Team 06: it proxies their submissions endpoint (with a
+fallback when Team 06 is unavailable) and receives their webhooks.
 
 ### Architecture Diagram
 ```text
-[ Instructor's React App (Frontend) ]
-       |      |      |
-       |      |      |-- (1) Authenticate --> [ Firebase Auth ] (Email/Password)
-       |      |
-       |      |--------- (2) Direct Upload -> [ Firebase Storage ] (Files/Attachments)
-       |                                          ^ (Protected by Storage Security Rules)
-       |
-       |---------------- (3) Data CRUD -----> [ Cloud Firestore DB ] (NoSQL)
-                                                  ^ (Protected by Firestore Security Rules)
-                                                  ^ (Secured by Firebase App Check)
-
+[ Instructor's React App (Frontend) ]  -- Firebase Hosting
+        |
+        | HTTPS (JSON), CORS allowlist
+        v
+[ Team 05 REST API ]  -- Vercel Serverless Functions (repo: learning-platform-api)
+   |        |                         |
+   |        |                         +--(webhook in)--- [ Team 06 Submission API ]
+   |        +--(proxy, 5s timeout,   ---------------->   [ Team 06 Submission API ]
+   |            fallback on failure)
+   v
+[ Cloud Firestore ]  -- accessed only via Firebase Admin SDK (service account)
 ```
 
 ### Components
 
 #### Frontend
+* **Technology:** React (Vite) + Tailwind CSS.
+* **Role:** Instructor UI: Dashboard, Create/Edit/Detail Assignment, Sections. All data access goes
+  through a single service layer (`src/services/api.js`) that calls the Team 05 REST API.
+* **Resilience:** Team 06 data is loaded independently of Team 05 data. If Team 06 is down, returns
+  404, times out, or sends malformed data, only the submissions panel shows a fallback message.
+* **Hosting:** Firebase Hosting.
 
-* **Technology:** React (Vite or Create React App) + Tailwind CSS.
-* **Role:** Serves as the user interface (UI) for Instructors and manages the primary data flow. It uses the Firebase Client JS SDK to read and write data directly (including executing Firestore Batched Writes to prevent orphaned data) and manages the application state.
-* **Hosting:** Deployed on Firebase Hosting.
-
-#### Backend
-
-* **Technology:** Serverless BaaS (Firebase Security Rules + Firebase App Check).
-* **Role:** There is no custom backend (REST API) in this MVP. The traditional backend role is entirely replaced by Firestore Security Rules, which run on Google's servers. These rules enforce strict authorization, prevent cross-cohort data access (Tenant Isolation), and validate incoming data schemas. Additionally, Firebase App Check is implemented to protect the system from bot attacks or malicious external scripts attempting to exhaust database quotas.
+#### Backend (Team 05 REST API)
+* **Technology:** Vercel Serverless Functions (Node.js) + Firebase Admin SDK.
+* **Role:** CRUD for assignments and cohorts (sections), the Team 06 submissions proxy, and the
+  webhook receiver.
+* **Endpoints:**
+  * `GET/POST /api/assignments`, `GET/PUT/DELETE /api/assignments/:id`
+  * `GET/POST /api/cohorts`, `GET/PUT/DELETE /api/cohorts/:id` (DELETE returns 409 if the cohort
+    still has assignments)
+  * `GET /api/cohorts/:id/assignments`
+  * `GET /api/team06/assignments/:id/submissions` (returns `fallback: true` when Team 06 fails)
+  * `POST /api/webhooks/receive` (secret header, idempotent by `submissionId`)
+* **Configuration:** Service account and integration secrets are stored as Vercel environment
+  variables (`FIREBASE_*`, `TEAM06_BASE_URL`, `TEAM06_INTEGRATION_KEY`, `WEBHOOK_SECRET`,
+  `ALLOWED_ORIGINS`).
 
 #### Database
-
-* **Technology:** Cloud Firestore (NoSQL Document Database).
-* **Role:** Stores Users (Instructors), Cohorts, and Assignments. The data structure is designed to be flat, making it an ideal fit for the NoSQL document model.
-* **Feature:** Offline Persistence is enabled via the Client SDK, allowing Instructors to use the app and save data even during network disruptions. The data will automatically sync to the cloud once the connection is restored.
+* **Technology:** Cloud Firestore (NoSQL).
+* **Role:** Stores Users (Instructors), Cohorts, Assignments, and webhook logs (for idempotency).
+* **Access:** Only through the Admin SDK on the API. Firestore Security Rules should deny direct
+  client access, since the browser no longer uses the client SDK.
 
 #### Authentication
-
-* **Technology:** Firebase Authentication.
-* **Role:** Manages the Sign-Up and Log-In process via Email and Password for Instructors only (there are no Student accounts in the MVP scope). It automatically issues and refreshes ID tokens used to securely authenticate requests against Firestore and Storage.
+* **Current state:** Not implemented yet. Records are created for a fixed mock instructor.
+* **Planned:** Firebase Authentication (email/password) on the frontend. The frontend sends the
+  Firebase ID token in an `Authorization: Bearer` header, and the API verifies it with
+  `admin.auth().verifyIdToken()` and scopes every query to that instructor (BR-02).
 
 #### Storage
-
-* **Technology:** Firebase Cloud Storage.
-* **Role:** Used solely for storing Assignment attachments (e.g., rubrics or instruction PDFs). The frontend directly uploads files to Storage and then saves the resulting download URL into the Firestore document.
-* **Constraint:** File uploads are capped at 5MB per file and are strictly protected by Storage Security Rules, ensuring files are accessible only to the Instructor who owns them.
+* **Current state:** Attachments are stored as a URL field (`attachmentUrl`). File upload to Firebase
+  Cloud Storage is not implemented yet.
 
 #### External Services
-
-* **Technology:** None (in MVP).
-* **Role:** The system is entirely self-contained. There are no connections to third-party APIs, external webhooks, or AI services in the MVP phase. This intentionally reduces complexity and ensures the project scope can be realistically completed within one semester.
-
----
+* **Team 06 Submission Module:** consumed through the proxy endpoint above (integration key header)
+  and sends `submission.created` webhooks to Team 05.
