@@ -29,7 +29,7 @@ fallback when Team 06 is unavailable) and receives their webhooks.
 
 #### Frontend
 * **Technology:** React (Vite) + Tailwind CSS.
-* **Role:** Instructor UI: Dashboard, Create/Edit/Detail Assignment, Sections. All data access goes
+* **Role:** Instructor UI: Login, Dashboard, Create/Edit/Detail Assignment, Sections. All data access goes
   through a single service layer (`src/services/api.js`) that calls the Team 05 REST API.
 * **Resilience:** Team 06 data is loaded independently of Team 05 data. If Team 06 is down, returns
   404, times out, or sends malformed data, only the submissions panel shows a fallback message.
@@ -43,12 +43,14 @@ fallback when Team 06 is unavailable) and receives their webhooks.
   * `GET/POST /api/assignments`, `GET/PUT/DELETE /api/assignments/:id`
   * `GET/POST /api/cohorts`, `GET/PUT/DELETE /api/cohorts/:id` (DELETE returns 409 if the cohort
     still has assignments)
-  * `GET /api/cohorts/:id/assignments`
+  * `GET/POST /api/cohorts/:id/assignments`
+  * `GET/PUT /api/me` (signed-in instructor's profile)
   * `GET /api/team06/assignments/:id/submissions` (returns `fallback: true` when Team 06 fails)
   * `POST /api/webhooks/receive` (secret header, idempotent by `submissionId`)
 * **Configuration:** Service account and integration secrets are stored as Vercel environment
   variables (`FIREBASE_*`, `TEAM06_BASE_URL`, `TEAM06_INTEGRATION_KEY`, `WEBHOOK_SECRET`,
-  `ALLOWED_ORIGINS`).
+  `ALLOWED_ORIGINS`). The partner read key defaults to `TEAM06_INTEGRATION_KEY`.
+* **Responses:** Assignments include `cohortName` and `instructorName` for display.
 
 #### Database
 * **Technology:** Cloud Firestore (NoSQL).
@@ -57,14 +59,22 @@ fallback when Team 06 is unavailable) and receives their webhooks.
   client access, since the browser no longer uses the client SDK.
 
 #### Authentication
-* **Current state:** Not implemented yet. Records are created for a fixed mock instructor.
-* **Planned:** Firebase Authentication (email/password) on the frontend. The frontend sends the
-  Firebase ID token in an `Authorization: Bearer` header, and the API verifies it with
-  `admin.auth().verifyIdToken()` and scopes every query to that instructor (BR-02).
+* **Technology:** Firebase Authentication (email/password).
+* **Role:** Instructors sign up and sign in on the frontend, and every page requires a session.
+  Each API request carries the Firebase ID token in an `Authorization: Bearer` header, and the API
+  verifies it with the Firebase Admin SDK. The instructor's full name is saved through `PUT /api/me`.
+* **Data isolation:** A signed-in instructor only sees and changes their own cohorts and assignments
+  (other records return `403`). The API sets the owner from the token, not from the request body.
+* **Partner access:** Team 06 can read data with the `X-Integration-Key` header. The key is read-only.
+* **Current limitation:** `REQUIRE_AUTH` is intentionally not enabled, so the deployed API still
+  accepts requests with no credentials, including writes, and those requests are not limited to one
+  instructor. Login is enforced by the web app only. This keeps the Team 06 integration working
+  without changes. Setting `REQUIRE_AUTH=true` on Vercel closes anonymous access.
 
-#### Storage
-* **Current state:** Attachments are stored as a URL field (`attachmentUrl`). File upload to Firebase
-  Cloud Storage is not implemented yet.
+#### Attachments
+* **Current state:** An assignment can have links and files, kept in its `attachments` list. File
+  contents are stored as base64 inside the Firestore document, so the form limits attached files to
+  700 KB in total to fit Firestore's 1 MiB document limit. Firebase Cloud Storage is not used.
 
 #### External Services
 * **Team 06 Submission Module:** consumed through the proxy endpoint above (integration key header)
